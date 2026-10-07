@@ -21,6 +21,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     signingConfigs {
+        getByName("debug") {
+            val debugKeyPath = System.getenv("BAOXIAO_DEBUG_KEYSTORE")
+            if (!debugKeyPath.isNullOrBlank()) {
+                storeFile = file(debugKeyPath)
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         create("cloudRelease") {
             val keyPath = System.getenv("ANDROID_KEYSTORE_PATH")
             if (!keyPath.isNullOrBlank()) {

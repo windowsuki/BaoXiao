@@ -32,7 +32,12 @@ jobs:
             keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
           fi
       - name: Test, lint and build
-        run: gradle testDebugUnitTest lintDebug assembleDebug --stacktrace
+        run: |
+          export BAOXIAO_DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+          gradle testDebugUnitTest lintDebug assembleDebug signingReport --stacktrace
+          expected=$(keytool -list -v -keystore "$BAOXIAO_DEBUG_KEYSTORE" -storepass android -alias androiddebugkey | sed -n 's/.*SHA256: //p' | tr -d ': ' | tr '[:upper:]' '[:lower:]')
+          actual=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | sed -n 's/Signer #1 certificate SHA-256 digest: //p' | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+          test -n "$expected" && test "$expected" = "$actual"
       - name: Build fixed-signature release when configured
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
