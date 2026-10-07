@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -23,7 +24,15 @@ class LedgerModel(app: Application) : AndroidViewModel(app) {
             try { block() } catch (e: Exception) { message.value = e.message ?: "操作失败，请重试" } finally { busy.value = false }
         }
     }
-    fun save(expense: Expense, then: () -> Unit) = work { db.dao().save(expense); then() }
+    fun save(expense: Expense, then: () -> Unit) = work {
+        db.withTransaction {
+            val received = db.dao().snapshot().find { it.expense.id == expense.id }?.received ?: 0L
+            val valid = if (expense.status == ClaimStatus.RECEIVED.name && received < expense.requested)
+                expense.copy(status = ClaimStatus.SUBMITTED.name) else expense
+            db.dao().save(valid)
+        }
+        then()
+    }
     fun import(id: String, uris: List<Uri>, kind: MaterialKind) = work {
         var duplicates = 0
         for (uri in uris) {
@@ -35,7 +44,19 @@ class LedgerModel(app: Application) : AndroidViewModel(app) {
         message.value = if (duplicates > 0) "已导入，跳过 $duplicates 份重复材料" else "材料已导入"
     }
     fun receipt(id: String, cents: Long) = work { require(cents > 0); db.dao().add(Receipt(expenseId = id, amount = cents)) }
-    fun removeReceipt(id: String) = work { db.dao().deleteReceipt(id) }
+    fun removeReceipt(id: String) = work {
+        db.withTransaction {
+            val record = db.dao().snapshot().find { r -> r.receipts.any { it.id == id } }
+            db.dao().deleteReceipt(id)
+            if (record != null && record.expense.status == ClaimStatus.RECEIVED.name &&
+                record.receipts.filter { it.id != id }.sumOf { it.amount } < record.expense.requested)
+                db.dao().save(record.expense.copy(status = ClaimStatus.SUBMITTED.name))
+        }
+    }
+    fun share(a: Attachment) = work {
+        val target = withContext(Dispatchers.IO) { files.prepareShare(a) }
+        files.shareFile(target, a.mime)
+    }
     fun removeAttachment(a: Attachment) = work { db.dao().deleteAttachment(a.id); withContext(Dispatchers.IO) { files.file(a).delete() } }
     fun export(ids: Set<String>?, uri: Uri?, backup: Boolean) = work {
         val snapshot = db.dao().snapshot().filter { ids == null || it.expense.id in ids }

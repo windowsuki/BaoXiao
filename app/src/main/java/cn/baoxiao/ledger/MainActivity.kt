@@ -248,7 +248,7 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
                     Text(a.name, fontWeight = FontWeight.Medium); Text("${a.size / 1024} KB · 原文件", fontSize = 12.sp)
                     Row {
                         TextButton(onClick = { runCatching { model.files.open(a) }.onFailure { model.message.value = "没有可打开该文件的应用" } }) { Text("查看") }
-                        TextButton(onClick = { runCatching { model.files.share(a) }.onFailure { model.message.value = "分享失败：${it.message}" } }) { Text("转发") }
+                        TextButton(enabled = !busy, onClick = { model.share(a) }) { Text("转发") }
                         TextButton(onClick = { attachmentDelete = a }) { Text("移除") }
                     }
                     Choice("材料类型", MaterialKind.valueOf(a.kind).label, MaterialKind.entries.map { it.label }) { label -> model.work { model.db.dao().update(a.copy(kind = MaterialKind.entries.first { it.label == label }.name)) } }

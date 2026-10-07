@@ -39,14 +39,14 @@ class LedgerFiles(private val context: Context) {
     fun open(a: Attachment) {
         context.startActivity(Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(FileProvider.getUriForFile(context, "${context.packageName}.files", file(a)), a.mime)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         })
     }
-    fun share(a: Attachment) {
+    fun prepareShare(a: Attachment): File {
         val export = File(context.cacheDir, "exports/${UUID.randomUUID()}").apply { mkdirs() }
         val target = File(export, safeName(a.name))
         file(a).copyTo(target)
-        shareFile(target, a.mime)
+        return target
     }
     fun shareFile(file: File, mime: String) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
@@ -55,7 +55,7 @@ class LedgerFiles(private val context: Context) {
             clipData = ClipData.newUri(context.contentResolver, file.name, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        context.startActivity(Intent.createChooser(intent, "发送原文件"))
+        context.startActivity(Intent.createChooser(intent, "发送原文件").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
     fun export(records: List<ExpenseRecord>, backup: Boolean): File {
         val target = File(context.cacheDir, "exports/${UUID.randomUUID()}.zip").apply { parentFile?.mkdirs() }
@@ -108,9 +108,11 @@ class LedgerFiles(private val context: Context) {
             require(manifestFile.length() <= 10 * 1024 * 1024) { "备份索引过大" }
             val json = JSONObject(manifestFile.readText()); require(json.getInt("version") == 1) { "备份版本不支持" }
             val existing = db.dao().snapshot().map { it.expense.id }.toSet()
+            val seen = mutableSetOf<String>()
             val parsed = mutableListOf<ExpenseRecord>(); val records = json.getJSONArray("records")
             for (i in 0 until records.length()) {
                 val r = records.getJSONObject(i); val e = r.getJSONObject("expense"); val id = e.getString("id")
+                require(seen.add(id)) { "备份包含重复账目" }
                 if (id in existing) continue
                 val expense = Expense(id, e.getString("title"), e.getLong("paid"), e.getLong("requested"), e.getLong("refunded"), e.getString("date"), e.getString("category"), e.getString("project"), e.getString("merchant"), e.getString("note"), e.getString("status"), e.getString("batch"), e.getBoolean("deleted"))
                 ClaimStatus.valueOf(expense.status); java.time.LocalDate.parse(expense.date)
@@ -125,7 +127,7 @@ class LedgerFiles(private val context: Context) {
                     attachments.add(Attachment(UUID.randomUUID().toString(), id, a.getString("name"), dest.name, a.getString("mime"), a.getString("kind"), a.getString("hash"), dest.length()))
                 }
                 val receipts = mutableListOf<Receipt>(); val rr = r.getJSONArray("receipts")
-                for (j in 0 until rr.length()) { val receipt = rr.getJSONObject(j); val amount = receipt.getLong("amount"); require(amount > 0); receipts.add(Receipt(expenseId = id, amount = amount, date = receipt.getString("date"))) }
+                for (j in 0 until rr.length()) { val receipt = rr.getJSONObject(j); val amount = receipt.getLong("amount"); require(amount > 0); val date = receipt.getString("date"); java.time.LocalDate.parse(date); receipts.add(Receipt(expenseId = id, amount = amount, date = date)) }
                 parsed.add(ExpenseRecord(expense, attachments, receipts))
             }
             db.withTransaction { parsed.forEach { r -> db.dao().save(r.expense); r.attachments.forEach { db.dao().add(it) }; r.receipts.forEach { db.dao().add(it) } } }
