@@ -43,6 +43,7 @@ interface LedgerDao {
     @Transaction @Query("SELECT * FROM expenses ORDER BY date DESC") suspend fun snapshot(): List<ExpenseRecord>
     @Upsert suspend fun save(expense: Expense)
     @Insert suspend fun add(attachment: Attachment)
+    @Update suspend fun update(attachment: Attachment)
     @Insert suspend fun add(receipt: Receipt)
     @Query("DELETE FROM receipts WHERE id = :id") suspend fun deleteReceipt(id: String)
     @Query("DELETE FROM attachments WHERE id = :id") suspend fun deleteAttachment(id: String)

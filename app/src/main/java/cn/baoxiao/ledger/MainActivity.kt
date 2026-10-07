@@ -251,7 +251,7 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
                         TextButton(onClick = { runCatching { model.files.share(a) }.onFailure { model.message.value = "分享失败：${it.message}" } }) { Text("转发") }
                         TextButton(onClick = { attachmentDelete = a }) { Text("移除") }
                     }
-                    Choice("材料类型", MaterialKind.valueOf(a.kind).label, MaterialKind.entries.map { it.label }) { label -> model.work { model.db.dao().deleteAttachment(a.id); model.db.dao().add(a.copy(kind = MaterialKind.entries.first { it.label == label }.name)) } }
+                    Choice("材料类型", MaterialKind.valueOf(a.kind).label, MaterialKind.entries.map { it.label }) { label -> model.work { model.db.dao().update(a.copy(kind = MaterialKind.entries.first { it.label == label }.name)) } }
                 }
             } }
         }
