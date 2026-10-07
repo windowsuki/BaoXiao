@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState); enableEdgeToEdge(); receive(intent)
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(primary = Color(0xFF256B59), secondary = Color(0xFF56766B), background = Color(0xFFF5F7F4), surface = Color.White)) {
-                LedgerApp(incoming) { incoming = emptyList() }
+                LedgerApp(incoming, consumeIncoming = { incoming = emptyList() })
             }
         }
     }
@@ -155,7 +155,8 @@ private fun Home(records: List<ExpenseRecord>, add: () -> Unit, open: (String) -
 
 @Composable
 private fun ExpenseEditor(initial: Expense?, busy: Boolean, save: (Expense) -> Unit, cancel: () -> Unit) {
-    val base = remember(initial?.id) { initial ?: Expense() }
+    val draftId = rememberSaveable(initial?.id) { initial?.id ?: UUID.randomUUID().toString() }
+    val base = remember(draftId) { initial ?: Expense(id = draftId) }
     var title by rememberSaveable(base.id) { mutableStateOf(base.title) }
     var paid by rememberSaveable(base.id) { mutableStateOf(if (initial == null) "" else money(base.paid)) }
     var requested by rememberSaveable(base.id) { mutableStateOf(if (initial == null) "" else money(base.requested)) }
