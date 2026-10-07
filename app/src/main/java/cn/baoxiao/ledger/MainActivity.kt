@@ -115,7 +115,7 @@ private fun Home(records: List<ExpenseRecord>, add: () -> Unit, open: (String) -
     var query by rememberSaveable { mutableStateOf("") }
     val visible = records.filter { r ->
         val e = r.expense
-        (query.isBlank() || listOf(e.title, e.category, e.project, e.merchant, e.note, e.batch).any { it.contains(query, true) }) && when (filter) {
+        (query.isBlank() || e.title.contains(query, true)) && when (filter) {
             "缺材料" -> r.missing.isNotEmpty()
             "待提交" -> e.status in listOf("PREPARING", "READY", "RETURNED")
             "等到账" -> e.status == "SUBMITTED" && e.requested > r.received
@@ -135,14 +135,14 @@ private fun Home(records: List<ExpenseRecord>, add: () -> Unit, open: (String) -
             }
         }
         item { Button(onClick = add, modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(16.dp)) { Text("＋ 录入支出", fontSize = 17.sp) } }
-        item { OutlinedTextField(query, { query = it }, placeholder = { Text("搜索名称、项目或报销单") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+        item { OutlinedTextField(query, { query = it }, placeholder = { Text("搜索支出名称") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
         item { Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { listOf("全部", "缺材料", "待提交", "等到账").forEach { label -> FilterChip(selected = filter == label, onClick = { filter = label }, label = { Text(label, fontSize = 12.sp) }) } } }
         if (visible.isEmpty()) item { Text(if (records.isEmpty()) "还没有支出。录入第一笔，开始整理材料。" else "没有符合条件的支出。", Modifier.padding(vertical = 24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant) }
         items(visible, key = { it.expense.id }) { r ->
             Card(onClick = { open(r.expense.id) }, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row { Text(r.expense.title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text("¥${money(r.expense.paid)}", fontWeight = FontWeight.Bold) }
-                    Row { Text("${r.expense.date} · ${r.expense.category}", Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(ClaimStatus.valueOf(r.expense.status).label, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
+                    Row { Text(r.expense.date, Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(ClaimStatus.valueOf(r.expense.status).label, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
                     if (r.missing.isNotEmpty()) Text("未添加：${r.missing.joinToString("、")}", fontSize = 12.sp, color = Color(0xFF9B6621))
                 }
             }
@@ -160,11 +160,6 @@ private fun ExpenseEditor(initial: Expense?, busy: Boolean, save: (Expense) -> U
     var requested by rememberSaveable(base.id) { mutableStateOf(if (initial == null) "" else money(base.requested)) }
     var refunded by rememberSaveable(base.id) { mutableStateOf(money(base.refunded)) }
     var date by rememberSaveable(base.id) { mutableStateOf(base.date) }
-    var category by rememberSaveable(base.id) { mutableStateOf(base.category) }
-    var project by rememberSaveable(base.id) { mutableStateOf(base.project) }
-    var merchant by rememberSaveable(base.id) { mutableStateOf(base.merchant) }
-    var batch by rememberSaveable(base.id) { mutableStateOf(base.batch) }
-    var note by rememberSaveable(base.id) { mutableStateOf(base.note) }
     var error by remember { mutableStateOf<String?>(null) }
     LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
         item { Text("先记金额，材料可以稍后补充。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -173,17 +168,12 @@ private fun ExpenseEditor(initial: Expense?, busy: Boolean, save: (Expense) -> U
         item { Field("申请报销金额（留空同支付金额）", requested, { requested = it }, decimal = true) }
         item { Field("已退款金额（元）", refunded, { refunded = it }, decimal = true) }
         item { Field("支付日期（YYYY-MM-DD）", date, { date = it }) }
-        item { Choice("类别", category, listOf("采购", "交通", "住宿", "餐饮", "其他")) { category = it } }
-        item { Field("项目 / 课题", project, { project = it }) }
-        item { Field("商家 / 收款方", merchant, { merchant = it }) }
-        item { Field("报销单名称（同名支出归为一单）", batch, { batch = it }) }
-        item { Field("备注", note, { note = it }, multiline = true) }
         error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
         item { Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
             val p = parseMoney(paid); val q = if (requested.isBlank()) p else parseMoney(requested); val f = parseMoney(refunded)
             if (title.isBlank() || p == null || p <= 0 || q == null || f == null || f > p) error = "请填写名称和有效金额，最多两位小数，退款不能超过支付金额。"
             else if (runCatching { LocalDate.parse(date) }.isFailure) error = "日期格式应为 YYYY-MM-DD。"
-            else save(base.copy(title = title.trim(), paid = p, requested = q, refunded = f, date = date, category = category, project = project, merchant = merchant, note = note, batch = batch.trim()))
+            else save(base.copy(title = title.trim(), paid = p, requested = q, refunded = f, date = date))
         }) { Text("保存支出") } }
         item { TextButton(onClick = cancel, modifier = Modifier.fillMaxWidth()) { Text("取消") } }
     }
@@ -213,7 +203,7 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
     var delete by remember { mutableStateOf(false) }
     var attachmentDelete by remember { mutableStateOf<Attachment?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { Row { Column(Modifier.weight(1f)) { Text(r.expense.title, fontSize = 24.sp, fontWeight = FontWeight.Bold); Text("¥ ${money(r.expense.paid)}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary); Text("${r.expense.date} · ${r.expense.category}") }; TextButton(onClick = edit) { Text("编辑") } } }
+        item { Row { Column(Modifier.weight(1f)) { Text(r.expense.title, fontSize = 24.sp, fontWeight = FontWeight.Bold); Text("¥ ${money(r.expense.paid)}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary); Text(r.expense.date) }; TextButton(onClick = edit) { Text("编辑") } } }
         item { Text("申请 ¥${money(r.expense.requested)}   到账 ¥${money(r.received)}   退款 ¥${money(r.expense.refunded)}") }
         item { Text("尚未收回 ¥${money(r.outstanding)}", fontWeight = FontWeight.Bold) }
         item { Choice("报销状态", ClaimStatus.valueOf(r.expense.status).label, ClaimStatus.entries.map { it.label }) { label ->
@@ -221,10 +211,6 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
             if (status == ClaimStatus.RECEIVED && r.received < r.expense.requested) model.message.value = "请先记录到账金额，再标记已到账。"
             else model.save(r.expense.copy(status = status.name)) {}
         } }
-        if (r.expense.project.isNotBlank()) item { Text("项目：${r.expense.project}") }
-        if (r.expense.batch.isNotBlank()) item { Text("报销单：${r.expense.batch}"); OutlinedButton(onClick = {
-            val ids = model.records.value.filter { !it.expense.deleted && it.expense.batch == r.expense.batch }.map { it.expense.id }.toSet(); model.export(ids, null, false)
-        }) { Text("打包整张报销单") } }
         item { Row { Text("报销材料", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold); Text("${r.attachments.size} 份", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
         item { Choice("添加材料类型", MaterialKind.valueOf(kind).label, MaterialKind.entries.map { it.label }) { label -> kind = MaterialKind.entries.first { it.label == label }.name } }
         item { Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -253,7 +239,6 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
         item { OutlinedButton(enabled = !busy, onClick = { model.export(setOf(r.expense.id), null, false) }, modifier = Modifier.fillMaxWidth()) { Text("打包这笔支出的材料与清单") } }
         item { Row { Text("到账记录", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(onClick = { receiptDialog = true }) { Text("＋记录到账") } } }
         items(r.receipts, key = { it.id }) { receipt -> Row { Text("${receipt.date}   ¥${money(receipt.amount)}", Modifier.weight(1f)); TextButton(onClick = { model.removeReceipt(receipt.id) }) { Text("撤销") } } }
-        if (r.expense.note.isNotBlank()) item { Text("备注", fontWeight = FontWeight.Bold); Text(r.expense.note) }
         item { TextButton(onClick = { delete = true }, modifier = Modifier.fillMaxWidth()) { Text("移入回收站", color = MaterialTheme.colorScheme.error) } }
     }
     if (receiptDialog) AlertDialog(onDismissRequest = { receiptDialog = false }, title = { Text("记录一次报销到账") }, text = { Field("到账金额（元）", receiptAmount, { receiptAmount = it }, decimal = true) }, confirmButton = { TextButton(onClick = {
@@ -273,10 +258,6 @@ private fun Statistics(records: List<ExpenseRecord>) {
         item { Text("尚未收回的垫款 ¥${money(records.sumOf { it.outstanding })}", fontSize = 20.sp) }
         item { Text("按月份 · 实际支出", fontWeight = FontWeight.Bold) }
         records.groupBy { it.expense.date.take(7) }.toSortedMap(reverseOrder()).forEach { (month, rows) -> item { SummaryRow(month, rows.sumOf { it.expense.paid - it.expense.refunded }) } }
-        item { Text("按类别 · 实际支出", fontWeight = FontWeight.Bold) }
-        records.groupBy { it.expense.category }.forEach { (category, rows) -> item { SummaryRow(category, rows.sumOf { it.expense.paid - it.expense.refunded }) } }
-        item { Text("按项目 · 实际支出", fontWeight = FontWeight.Bold) }
-        records.groupBy { it.expense.project.ifBlank { "未指定项目" } }.forEach { (project, rows) -> item { SummaryRow(project, rows.sumOf { it.expense.paid - it.expense.refunded }) } }
     }
 }
 
