@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,16 +21,13 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
-import java.io.File
 import java.time.LocalDate
 import java.util.UUID
 
@@ -204,13 +202,11 @@ private fun Choice(label: String, value: String, options: List<String>, select: 
 
 @Composable
 private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back: () -> Unit) {
-    val context = LocalContext.current
     val busy by model.busy.collectAsStateWithLifecycle()
     var kind by rememberSaveable { mutableStateOf(MaterialKind.PAYMENT.name) }
-    var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris -> if (uris.isNotEmpty()) model.import(r.expense.id, uris, MaterialKind.valueOf(kind)) }
-    val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-        cameraPath?.let { path -> val f = File(path); if (ok) { val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", f); model.import(r.expense.id, listOf(uri), MaterialKind.valueOf(kind)) } }; cameraPath = null
+    val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isNotEmpty()) model.import(r.expense.id, uris, MaterialKind.valueOf(kind))
     }
     var receiptDialog by remember { mutableStateOf(false) }
     var receiptAmount by rememberSaveable { mutableStateOf("") }
@@ -234,10 +230,8 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
         item { Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(enabled = !busy, onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.weight(1f)) { Text("选择文件") }
             OutlinedButton(enabled = !busy, onClick = {
-                val f = File(context.cacheDir, "camera/${UUID.randomUUID()}.jpg").apply { parentFile?.mkdirs() }
-                cameraPath = f.absolutePath
-                runCatching { camera.launch(FileProvider.getUriForFile(context, "${context.packageName}.files", f)) }.onFailure { model.message.value = "无法启动相机，请从相册导入" }
-            }, modifier = Modifier.weight(1f)) { Text("拍照") }
+                gallery.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }, modifier = Modifier.weight(1f)) { Text("从图库选择") }
         } }
         MaterialKind.entries.forEach { materialKind ->
             item { Text(materialKind.label, fontWeight = FontWeight.SemiBold) }
