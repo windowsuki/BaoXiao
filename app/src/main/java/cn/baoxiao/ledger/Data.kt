@@ -32,9 +32,43 @@ data class ExpenseRecord(
     @Relation(parentColumn = "id", entityColumn = "expenseId") val receipts: List<Receipt>
 ) {
     val received: Long get() = receipts.sumOf { it.amount }
-    val outstanding: Long get() = expense.paid - expense.refunded - received
+    val isCounted: Boolean get() = !expense.deleted && expense.status != ClaimStatus.CANCELLED.name
+    val remainingReimbursement: Long get() = (expense.netPaid - received).coerceAtLeast(0)
+    val outstanding: Long get() = if (isCounted) remainingReimbursement else 0
     val missing: List<String> get() = listOf(MaterialKind.PAYMENT, MaterialKind.BILL, MaterialKind.INVOICE)
         .filter { kind -> attachments.none { it.kind == kind.name } }.map { it.label }
+
+    fun receiveFully(): ExpenseRecord {
+        require(isCounted) { "请先恢复这笔报账。" }
+        val extra = if (remainingReimbursement > 0)
+            listOf(Receipt(expenseId = expense.id, amount = remainingReimbursement)) else emptyList()
+        return copy(expense = expense.copy(requested = expense.netPaid, status = ClaimStatus.RECEIVED.name), receipts = receipts + extra)
+    }
+
+    fun restoreClaim(): ExpenseRecord {
+        require(expense.status == ClaimStatus.CANCELLED.name) { "这笔报账未取消。" }
+        val status = if (remainingReimbursement == 0L) ClaimStatus.RECEIVED else ClaimStatus.PREPARING
+        return copy(expense = expense.copy(status = status.name))
+    }
+}
+
+val Expense.netPaid: Long get() = paid - refunded
+
+data class LedgerTotals(
+    val spent: Long, val received: Long, val outstanding: Long,
+    val pending: Long, val submitted: Long, val monthly: Map<String, Long>
+)
+
+fun ledgerTotals(records: List<ExpenseRecord>): LedgerTotals {
+    val counted = records.filter { it.isCounted }
+    return LedgerTotals(
+        spent = counted.sumOf { it.expense.netPaid },
+        received = counted.sumOf { it.received },
+        outstanding = counted.sumOf { it.outstanding },
+        pending = counted.filter { it.expense.status in listOf(ClaimStatus.PREPARING.name, ClaimStatus.READY.name, ClaimStatus.RETURNED.name) }.sumOf { it.outstanding },
+        submitted = counted.filter { it.expense.status == ClaimStatus.SUBMITTED.name }.sumOf { it.outstanding },
+        monthly = counted.groupBy { it.expense.date.take(7) }.mapValues { (_, rows) -> rows.sumOf { it.expense.netPaid } }.toSortedMap(reverseOrder())
+    )
 }
 
 @Dao

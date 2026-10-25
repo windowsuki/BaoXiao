@@ -11,7 +11,7 @@ fun parseMoney(value: String): Long? = try {
 fun money(cents: Long): String = BigDecimal.valueOf(cents, 2).toPlainString()
 
 enum class ClaimStatus(val label: String) {
-    PREPARING("准备材料"), READY("待提交"), SUBMITTED("已提交"), RETURNED("退回补材料"), RECEIVED("已到账"), CANCELLED("取消报销")
+    PREPARING("准备材料"), READY("待提交"), SUBMITTED("已提交"), RETURNED("退回补材料"), RECEIVED("已全部到账"), CANCELLED("报账已取消")
 }
 
 enum class MaterialKind(val label: String) {

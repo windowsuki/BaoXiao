@@ -60,8 +60,8 @@ class LedgerFiles(private val context: Context) {
     fun export(records: List<ExpenseRecord>, backup: Boolean): File {
         val target = File(context.cacheDir, "exports/${UUID.randomUUID()}.zip").apply { parentFile?.mkdirs() }
         ZipOutputStream(target.outputStream()).use { zip ->
-            val csv = "名称,支付日期,实际支付,退款,申请报销,实际到账,未收回,类别,项目,报销单,状态\r\n" + records.joinToString("\r\n") { r ->
-                listOf(r.expense.title, r.expense.date, money(r.expense.paid), money(r.expense.refunded), money(r.expense.requested), money(r.received), money(r.outstanding), r.expense.category, r.expense.project, r.expense.batch, ClaimStatus.valueOf(r.expense.status).label).joinToString(",") { "\"${it.replace("\"", "\"\"")}\"" }
+            val csv = "名称,支付日期,实际支付,退款,申请报销,实际到账,未收回,类别,项目,报销单,状态,计入统计\r\n" + records.joinToString("\r\n") { r ->
+                listOf(r.expense.title, r.expense.date, money(r.expense.paid), money(r.expense.refunded), money(r.expense.requested), money(r.received), money(r.outstanding), r.expense.category, r.expense.project, r.expense.batch, ClaimStatus.valueOf(r.expense.status).label, if (r.isCounted) "是" else "否").joinToString(",") { "\"${it.replace("\"", "\"\"")}\"" }
             }
             entry(zip, "支出清单.csv", ("\uFEFF" + csv).toByteArray(Charsets.UTF_8))
             if (backup) entry(zip, "manifest.json", manifest(records).toString(2).toByteArray())

@@ -113,12 +113,13 @@ fun LedgerApp(incoming: List<Uri>, consumeIncoming: () -> Unit, model: LedgerMod
 private fun Home(records: List<ExpenseRecord>, add: () -> Unit, open: (String) -> Unit, stats: () -> Unit) {
     var filter by rememberSaveable { mutableStateOf("全部") }
     var query by rememberSaveable { mutableStateOf("") }
+    val totals = ledgerTotals(records)
     val visible = records.filter { r ->
         val e = r.expense
         (query.isBlank() || e.title.contains(query, true)) && when (filter) {
-            "缺材料" -> r.missing.isNotEmpty()
+            "缺材料" -> r.isCounted && e.status != ClaimStatus.RECEIVED.name && r.missing.isNotEmpty()
             "待提交" -> e.status in listOf("PREPARING", "READY", "RETURNED")
-            "等到账" -> e.status == "SUBMITTED" && e.requested > r.received
+            "等到账" -> e.status == "SUBMITTED" && r.outstanding > 0
             else -> true
         }
     }
@@ -127,10 +128,8 @@ private fun Home(records: List<ExpenseRecord>, add: () -> Unit, open: (String) -
             Card(onClick = stats, colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("尚未收回的垫款", color = Color.White.copy(alpha = .8f))
-                    Text("¥ ${money(records.sumOf { it.outstanding })}", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
-                    val pending = records.filter { it.expense.status in listOf("PREPARING", "READY", "RETURNED") }.sumOf { it.expense.requested }
-                    val submitted = records.filter { it.expense.status == "SUBMITTED" }.sumOf { (it.expense.requested - it.received).coerceAtLeast(0) }
-                    Text("待提交 ¥${money(pending)}   已提交未到账 ¥${money(submitted)}", color = Color.White, fontSize = 12.sp)
+                    Text("¥ ${money(totals.outstanding)}", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                    Text("待提交 ¥${money(totals.pending)}   已提交未到账 ¥${money(totals.submitted)}", color = Color.White, fontSize = 12.sp)
                 }
             }
         }
@@ -143,7 +142,8 @@ private fun Home(records: List<ExpenseRecord>, add: () -> Unit, open: (String) -
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row { Text(r.expense.title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold); Text("¥${money(r.expense.paid)}", fontWeight = FontWeight.Bold) }
                     Row { Text(r.expense.date, Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(ClaimStatus.valueOf(r.expense.status).label, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
-                    if (r.missing.isNotEmpty()) Text("未添加：${r.missing.joinToString("、")}", fontSize = 12.sp, color = Color(0xFF9B6621))
+                    if (!r.isCounted) Text("不计入金额统计", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    else if (r.missing.isNotEmpty() && r.expense.status != ClaimStatus.RECEIVED.name) Text("未添加：${r.missing.joinToString("、")}", fontSize = 12.sp, color = Color(0xFF9B6621))
                 }
             }
         }
@@ -157,7 +157,6 @@ private fun ExpenseEditor(initial: Expense?, busy: Boolean, save: (Expense) -> U
     val base = remember(draftId) { initial ?: Expense(id = draftId) }
     var title by rememberSaveable(base.id) { mutableStateOf(base.title) }
     var paid by rememberSaveable(base.id) { mutableStateOf(if (initial == null) "" else money(base.paid)) }
-    var requested by rememberSaveable(base.id) { mutableStateOf(if (initial == null) "" else money(base.requested)) }
     var refunded by rememberSaveable(base.id) { mutableStateOf(money(base.refunded)) }
     var date by rememberSaveable(base.id) { mutableStateOf(base.date) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -165,15 +164,14 @@ private fun ExpenseEditor(initial: Expense?, busy: Boolean, save: (Expense) -> U
         item { Text("先记金额，材料可以稍后补充。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { Field("支出名称 *", title, { title = it }) }
         item { Field("实际支付金额（元）*", paid, { paid = it }, decimal = true) }
-        item { Field("申请报销金额（留空同支付金额）", requested, { requested = it }, decimal = true) }
         item { Field("已退款金额（元）", refunded, { refunded = it }, decimal = true) }
         item { Field("支付日期（YYYY-MM-DD）", date, { date = it }) }
         error?.let { item { Text(it, color = MaterialTheme.colorScheme.error) } }
         item { Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
-            val p = parseMoney(paid); val q = if (requested.isBlank()) p else parseMoney(requested); val f = parseMoney(refunded)
-            if (title.isBlank() || p == null || p <= 0 || q == null || f == null || f > p) error = "请填写名称和有效金额，最多两位小数，退款不能超过支付金额。"
+            val p = parseMoney(paid); val f = parseMoney(refunded)
+            if (title.isBlank() || p == null || p <= 0 || f == null || f > p) error = "请填写名称和有效金额，最多两位小数，退款不能超过支付金额。"
             else if (runCatching { LocalDate.parse(date) }.isFailure) error = "日期格式应为 YYYY-MM-DD。"
-            else save(base.copy(title = title.trim(), paid = p, requested = q, refunded = f, date = date))
+            else save(base.copy(title = title.trim(), paid = p, requested = p - f, refunded = f, date = date))
         }) { Text("保存支出") } }
         item { TextButton(onClick = cancel, modifier = Modifier.fillMaxWidth()) { Text("取消") } }
     }
@@ -198,19 +196,28 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
     val gallery = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
         if (uris.isNotEmpty()) model.import(r.expense.id, uris, MaterialKind.valueOf(kind))
     }
-    var receiptDialog by remember { mutableStateOf(false) }
-    var receiptAmount by rememberSaveable { mutableStateOf("") }
+    var cancelClaim by remember(r.expense.id) { mutableStateOf(false) }
     var delete by remember { mutableStateOf(false) }
     var attachmentDelete by remember { mutableStateOf<Attachment?>(null) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { Row { Column(Modifier.weight(1f)) { Text(r.expense.title, fontSize = 24.sp, fontWeight = FontWeight.Bold); Text("¥ ${money(r.expense.paid)}", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary); Text(r.expense.date) }; TextButton(onClick = edit) { Text("编辑") } } }
-        item { Text("申请 ¥${money(r.expense.requested)}   到账 ¥${money(r.received)}   退款 ¥${money(r.expense.refunded)}") }
-        item { Text("尚未收回 ¥${money(r.outstanding)}", fontWeight = FontWeight.Bold) }
-        item { Choice("报销状态", ClaimStatus.valueOf(r.expense.status).label, ClaimStatus.entries.map { it.label }) { label ->
-            val status = ClaimStatus.entries.first { it.label == label }
-            if (status == ClaimStatus.RECEIVED && r.received < r.expense.requested) model.message.value = "请先记录到账金额，再标记已到账。"
-            else model.save(r.expense.copy(status = status.name)) {}
-        } }
+        item { Text("应报销 ¥${money(r.expense.netPaid)}   到账 ¥${money(r.received)}   退款 ¥${money(r.expense.refunded)}") }
+        item { Text(if (r.isCounted) "尚未收回 ¥${money(r.outstanding)}" else "报账已取消，不计入金额统计；记录和材料仍保留。", fontWeight = FontWeight.Bold) }
+        item { Text("报销状态：${ClaimStatus.valueOf(r.expense.status).label}") }
+        if (r.isCounted) {
+            if (r.expense.status != ClaimStatus.RECEIVED.name) item {
+                val stages = listOf(ClaimStatus.PREPARING, ClaimStatus.READY, ClaimStatus.SUBMITTED, ClaimStatus.RETURNED)
+                Choice("整理进度", ClaimStatus.valueOf(r.expense.status).label, stages.map { it.label }) { label ->
+                    model.updateProgress(r.expense.id, stages.first { it.label == label })
+                }
+            }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(enabled = !busy && (r.expense.status != ClaimStatus.RECEIVED.name || r.remainingReimbursement > 0), onClick = { model.receiveFully(r.expense.id) }, modifier = Modifier.weight(1f)) {
+                    Text(if (r.expense.status == ClaimStatus.RECEIVED.name && r.remainingReimbursement == 0L) "已全部到账" else "全部到账")
+                }
+                OutlinedButton(enabled = !busy, onClick = { cancelClaim = true }, modifier = Modifier.weight(1f)) { Text("报账取消") }
+            } }
+        } else item { OutlinedButton(enabled = !busy, onClick = { model.restoreClaim(r.expense.id) }, modifier = Modifier.fillMaxWidth()) { Text("恢复报账") } }
         item { Row { Text("报销材料", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold); Text("${r.attachments.size} 份", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
         item { Choice("添加材料类型", MaterialKind.valueOf(kind).label, MaterialKind.entries.map { it.label }) { label -> kind = MaterialKind.entries.first { it.label == label }.name } }
         item { Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -237,27 +244,25 @@ private fun Detail(r: ExpenseRecord, model: LedgerModel, edit: () -> Unit, back:
             } }
         }
         item { OutlinedButton(enabled = !busy, onClick = { model.export(setOf(r.expense.id), null, false) }, modifier = Modifier.fillMaxWidth()) { Text("打包这笔支出的材料与清单") } }
-        item { Row { Text("到账记录", Modifier.weight(1f), fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(onClick = { receiptDialog = true }) { Text("＋记录到账") } } }
-        items(r.receipts, key = { it.id }) { receipt -> Row { Text("${receipt.date}   ¥${money(receipt.amount)}", Modifier.weight(1f)); TextButton(onClick = { model.removeReceipt(receipt.id) }) { Text("撤销") } } }
+        if (r.receipts.isNotEmpty()) item { Text("到账记录", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+        items(r.receipts, key = { it.id }) { receipt -> Row { Text("${receipt.date}   ¥${money(receipt.amount)}", Modifier.weight(1f)); if (r.isCounted) TextButton(enabled = !busy, onClick = { model.removeReceipt(receipt.id) }) { Text("撤销") } } }
         item { TextButton(onClick = { delete = true }, modifier = Modifier.fillMaxWidth()) { Text("移入回收站", color = MaterialTheme.colorScheme.error) } }
     }
-    if (receiptDialog) AlertDialog(onDismissRequest = { receiptDialog = false }, title = { Text("记录一次报销到账") }, text = { Field("到账金额（元）", receiptAmount, { receiptAmount = it }, decimal = true) }, confirmButton = { TextButton(onClick = {
-        val amount = parseMoney(receiptAmount)
-        if (amount == null || amount <= 0) model.message.value = "请输入有效到账金额"
-        else { model.receipt(r.expense.id, amount); receiptDialog = false; receiptAmount = "" }
-    }) { Text("保存") } }, dismissButton = { TextButton(onClick = { receiptDialog = false }) { Text("取消") } })
+    if (cancelClaim) AlertDialog(onDismissRequest = { cancelClaim = false }, title = { Text("取消这笔报账？") }, text = { Text("这笔记录将从支出、到账和垫款统计中排除，记录和原始材料保留，之后可以恢复报账。") }, confirmButton = { TextButton(enabled = !busy, onClick = { model.cancelClaim(r.expense.id); cancelClaim = false }) { Text("确认取消") } }, dismissButton = { TextButton(onClick = { cancelClaim = false }) { Text("返回") } })
     if (delete) AlertDialog(onDismissRequest = { delete = false }, title = { Text("移入回收站？") }, text = { Text("账目暂时退出统计，原始材料仍保留，可随时恢复。") }, confirmButton = { TextButton(onClick = { model.save(r.expense.copy(deleted = true)) { back() }; delete = false }) { Text("移入") } }, dismissButton = { TextButton(onClick = { delete = false }) { Text("取消") } })
     attachmentDelete?.let { a -> AlertDialog(onDismissRequest = { attachmentDelete = null }, title = { Text("移除材料？") }, text = { Text("将删除应用内的这份副本，不影响来源文件。建议先备份。") }, confirmButton = { TextButton(onClick = { model.removeAttachment(a); attachmentDelete = null }) { Text("移除") } }, dismissButton = { TextButton(onClick = { attachmentDelete = null }) { Text("取消") } }) }
 }
 
 @Composable
 private fun Statistics(records: List<ExpenseRecord>) {
+    val totals = ledgerTotals(records)
     LazyColumn(contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { Text("累计实际支出 ¥${money(records.sumOf { it.expense.paid - it.expense.refunded })}", fontSize = 22.sp, fontWeight = FontWeight.Bold) }
-        item { Text("累计报销到账 ¥${money(records.sumOf { it.received })}", fontSize = 20.sp) }
-        item { Text("尚未收回的垫款 ¥${money(records.sumOf { it.outstanding })}", fontSize = 20.sp) }
+        item { Text("累计实际支出 ¥${money(totals.spent)}", fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+        item { Text("累计报销到账 ¥${money(totals.received)}", fontSize = 20.sp) }
+        item { Text("尚未收回的垫款 ¥${money(totals.outstanding)}", fontSize = 20.sp) }
+        item { Text("已取消报账不计入以上金额和月份统计。", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item { Text("按月份 · 实际支出", fontWeight = FontWeight.Bold) }
-        records.groupBy { it.expense.date.take(7) }.toSortedMap(reverseOrder()).forEach { (month, rows) -> item { SummaryRow(month, rows.sumOf { it.expense.paid - it.expense.refunded }) } }
+        totals.monthly.forEach { (month, amount) -> item { SummaryRow(month, amount) } }
     }
 }
 

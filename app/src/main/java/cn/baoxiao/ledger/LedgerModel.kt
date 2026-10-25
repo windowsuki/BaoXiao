@@ -26,8 +26,11 @@ class LedgerModel(app: Application) : AndroidViewModel(app) {
     }
     fun save(expense: Expense, then: () -> Unit) = work {
         db.withTransaction {
-            val received = db.dao().snapshot().find { it.expense.id == expense.id }?.received ?: 0L
-            val valid = if (expense.status == ClaimStatus.RECEIVED.name && received < expense.requested)
+            val old = db.dao().snapshot().find { it.expense.id == expense.id }
+            val received = old?.received ?: 0L
+            if (old != null && (old.expense.paid != expense.paid || old.expense.refunded != expense.refunded))
+                require(expense.netPaid >= received) { "金额不能低于已到账金额，请先撤销错误的到账记录。" }
+            val valid = if (expense.status == ClaimStatus.RECEIVED.name && received < expense.netPaid)
                 expense.copy(status = ClaimStatus.SUBMITTED.name) else expense
             db.dao().save(valid)
         }
@@ -43,13 +46,45 @@ class LedgerModel(app: Application) : AndroidViewModel(app) {
         }
         message.value = if (duplicates > 0) "已导入，跳过 $duplicates 份重复材料" else "材料已导入"
     }
-    fun receipt(id: String, cents: Long) = work { require(cents > 0); db.dao().add(Receipt(expenseId = id, amount = cents)) }
+    fun receiveFully(id: String) = work {
+        db.withTransaction {
+            val record = db.dao().snapshot().find { it.expense.id == id } ?: error("账目不存在")
+            val settled = record.receiveFully()
+            settled.receipts.drop(record.receipts.size).forEach { db.dao().add(it) }
+            db.dao().save(settled.expense)
+        }
+        message.value = "已全部到账"
+    }
+    fun updateProgress(id: String, status: ClaimStatus) = work {
+        require(status in listOf(ClaimStatus.PREPARING, ClaimStatus.READY, ClaimStatus.SUBMITTED, ClaimStatus.RETURNED))
+        db.withTransaction {
+            val record = db.dao().snapshot().find { it.expense.id == id } ?: error("账目不存在")
+            require(record.isCounted && record.expense.status != ClaimStatus.RECEIVED.name) { "请先恢复报账或撤销到账。" }
+            db.dao().save(record.expense.copy(status = status.name))
+        }
+    }
+    fun cancelClaim(id: String) = work {
+        db.withTransaction {
+            val record = db.dao().snapshot().find { it.expense.id == id } ?: error("账目不存在")
+            db.dao().save(record.expense.copy(status = ClaimStatus.CANCELLED.name))
+        }
+        message.value = "报账已取消，不计入金额统计"
+    }
+    fun restoreClaim(id: String) = work {
+        db.withTransaction {
+            val record = db.dao().snapshot().find { it.expense.id == id } ?: error("账目不存在")
+            if (record.expense.status == ClaimStatus.CANCELLED.name) {
+                db.dao().save(record.restoreClaim().expense)
+            }
+        }
+        message.value = "已恢复报账并计入统计"
+    }
     fun removeReceipt(id: String) = work {
         db.withTransaction {
             val record = db.dao().snapshot().find { r -> r.receipts.any { it.id == id } }
             db.dao().deleteReceipt(id)
             if (record != null && record.expense.status == ClaimStatus.RECEIVED.name &&
-                record.receipts.filter { it.id != id }.sumOf { it.amount } < record.expense.requested)
+                record.receipts.filter { it.id != id }.sumOf { it.amount } < record.expense.netPaid)
                 db.dao().save(record.expense.copy(status = ClaimStatus.SUBMITTED.name))
         }
     }

@@ -9,6 +9,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    env:
+      BAOXIAO_UPDATE_CERT_SHA256: 3a47354b51963d129e91d553516822d48af4498cd1327cddc012952b9039174e
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -21,41 +23,78 @@ jobs:
       - uses: android-actions/setup-android@v4
       - name: Prepare Android SDK
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-      - uses: actions/cache@v4
+      # Restore the original key only. A temporary test key must never replace it.
+      - uses: actions/cache/restore@v4
         with:
           path: ~/.android/debug.keystore
           key: baoxiao-debug-signing-v1
-      - name: Generate debug signing key if missing
-        run: |
-          mkdir -p ~/.android
-          if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
-          fi
-      - name: Test, lint and build
-        run: |
-          export BAOXIAO_DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
-          gradle testDebugUnitTest lintDebug assembleDebug signingReport --stacktrace
-          expected=$(keytool -list -v -keystore "$BAOXIAO_DEBUG_KEYSTORE" -storepass android -alias androiddebugkey | sed -n 's/.*SHA256: //p' | tr -d ': ' | tr '[:upper:]' '[:lower:]')
-          actual=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/debug/app-debug.apk | sed -n 's/Signer #1 certificate SHA-256 digest: //p' | tr -d ' ' | tr '[:upper:]' '[:lower:]')
-          test -n "$expected" && test "$expected" = "$actual"
-      - name: Build fixed-signature release when configured
+      - name: Prepare signing key
+        id: signing
         env:
-          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          UPDATE_KEYSTORE_BASE64: ${{ secrets.BAOXIAO_UPDATE_KEYSTORE_BASE64 }}
+        shell: bash
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
-            export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
-            gradle assembleRelease --stacktrace
+          set -euo pipefail
+          umask 077
+          secret_candidate=''
+          if [ -n "$UPDATE_KEYSTORE_BASE64" ]; then
+            secret_candidate="$RUNNER_TEMP/baoxiao-update.keystore"
+            if ! printf '%s' "$UPDATE_KEYSTORE_BASE64" | base64 --decode > "$secret_candidate"; then
+              echo '::warning::The update signing secret could not be decoded. The restored key will be checked next.'
+              secret_candidate=''
+            fi
           fi
+          candidate=''
+          original_key=false
+          for key_path in "$secret_candidate" "$HOME/.android/debug.keystore"; do
+            if [ -z "$key_path" ] || [ ! -f "$key_path" ]; then
+              continue
+            fi
+            fingerprint=$(keytool -J-Duser.language=en -J-Duser.country=US -list -v -keystore "$key_path" -storepass android -alias androiddebugkey 2>/dev/null | sed -n 's/.*SHA256: //p' | tr -d ': ' | tr '[:upper:]' '[:lower:]') || fingerprint=''
+            if [ "$fingerprint" = "$BAOXIAO_UPDATE_CERT_SHA256" ]; then
+              candidate="$key_path"
+              original_key=true
+              break
+            fi
+          done
+          if [ "$original_key" != true ]; then
+            echo '::warning::The 0.1.2-final signing key is unavailable or does not match. Tests will run, but APK delivery will be blocked.'
+            candidate="$RUNNER_TEMP/baoxiao-test-only.keystore"
+            keytool -genkeypair -keystore "$candidate" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=BaoXiao Test Only,O=Android,C=US' >/dev/null 2>&1
+          fi
+          echo "BAOXIAO_DEBUG_KEYSTORE=$candidate" >> "$GITHUB_ENV"
+          echo "original_key=$original_key" >> "$GITHUB_OUTPUT"
+      - name: Test, lint and build
+        shell: bash
+        run: |
+          gradle testDebugUnitTest lintDebug assembleDebug signingReport --stacktrace
+      - name: Verify update signature against 0.1.2-final
+        id: verify-update
+        env:
+          ORIGINAL_KEY_AVAILABLE: ${{ steps.signing.outputs.original_key }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/build/reports
+          report=app/build/reports/update-signature.txt
+          echo "Required 0.1.2-final certificate SHA-256: $BAOXIAO_UPDATE_CERT_SHA256" > "$report"
+          if ! "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk >> "$report" 2>&1; then
+            cat "$report"
+            echo '::error::APK signature verification failed. No APK will be uploaded.'
+            exit 1
+          fi
+          mapfile -t fingerprints < <(sed -n 's/Signer #[0-9][0-9]* certificate SHA-256 digest: //p' "$report" | tr -d ' ' | tr '[:upper:]' '[:lower:]')
+          if [ "$ORIGINAL_KEY_AVAILABLE" != true ] || [ "${#fingerprints[@]}" -ne 1 ] || [ "${fingerprints[0]:-}" != "$BAOXIAO_UPDATE_CERT_SHA256" ]; then
+            cat "$report"
+            echo '::error::The APK cannot update the installed 0.1.2-final. Restore its original key using BAOXIAO_UPDATE_KEYSTORE_BASE64; test APK delivery is blocked.'
+            exit 1
+          fi
+          echo 'verified=true' >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
+        if: ${{ success() && steps.verify-update.outputs.verified == 'true' }}
         with:
           name: BaoXiao-APK
-          path: |
-            app/build/outputs/apk/debug/*.apk
-            app/build/outputs/apk/release/*.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
