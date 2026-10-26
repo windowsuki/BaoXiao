@@ -31,7 +31,9 @@ $output = [IO.Path]::GetFullPath($OutputApk)
 if ($source -eq $output) { throw 'Keep the unsigned input separate from the signed output.' }
 New-Item -ItemType Directory -Path (Split-Path $output -Parent) -Force | Out-Null
 $pending = $output + '.pending.apk'
-& $java[0].FullName -jar $jar sign --ks-type PKCS12 --ks $keystorePath --ks-pass ('file:' + $passwordPath) --key-pass ('file:' + $passwordPath) --min-sdk-version 26 --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out $pending $source
+# PKCS12 uses the store password for the key. Reading the same password file a
+# second time through --key-pass would consume a nonexistent second line.
+& $java[0].FullName -jar $jar sign --ks-type PKCS12 --ks $keystorePath --ks-pass ('file:' + $passwordPath) --min-sdk-version 26 --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out $pending $source
 if ($LASTEXITCODE -ne 0) { throw 'APK signing failed.' }
 $verification = & $java[0].FullName -jar $jar verify --verbose --print-certs $pending 2>&1
 if ($LASTEXITCODE -ne 0) { throw ('APK verification failed: ' + ($verification -join "`n")) }
