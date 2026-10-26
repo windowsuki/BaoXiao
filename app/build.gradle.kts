@@ -20,30 +20,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    signingConfigs {
-        getByName("debug") {
-            val debugKeyPath = System.getenv("BAOXIAO_DEBUG_KEYSTORE")
-            if (!debugKeyPath.isNullOrBlank()) {
-                storeFile = file(debugKeyPath)
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
-            }
-        }
-        create("cloudRelease") {
-            val keyPath = System.getenv("ANDROID_KEYSTORE_PATH")
-            if (!keyPath.isNullOrBlank()) {
-                storeFile = file(keyPath)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
-            }
-        }
-    }
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
-            if (!System.getenv("ANDROID_KEYSTORE_PATH").isNullOrBlank()) signingConfig = signingConfigs.getByName("cloudRelease")
         }
     }
 }

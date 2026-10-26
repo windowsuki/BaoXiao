@@ -1,0 +1,7 @@
+{
+  "packageName": "cn.baoxiao.ledger",
+  "certificateSha256": "75e46858eb823554e1d58978bda3d143b2c3542662e21ee4726efbfcba78445f",
+  "certificateSubject": "CN=BaoXiao Release, O=BaoXiao, C=CN",
+  "certificateExpiresUtc": "2066-10-26T01:41:24.0000000Z",
+  "minimumVersionCode": 4
+}

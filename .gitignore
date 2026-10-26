@@ -3,4 +3,9 @@
 local.properties
 *.jks
 *.keystore
+*.p12
+*.pfx
+/signing/
+/signing-backup/
+BaoXiao-signing-*.zip
 .idea/
